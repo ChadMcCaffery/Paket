@@ -483,8 +483,8 @@ module InstallModel =
                     if path.Contains "/address-model-64" then UnknownPlatform "address-model-64" else
                     NoPlatform
                 let newBuildMode =
-                    if path.Contains "/release/" then Release else
-                    if path.Contains "/debug/" then Debug else
+                    if path.Contains "/release/" then BuildMode.Release else
+                    if path.Contains "/debug/" then BuildMode.Debug else
                     NoBuildMode
                 { Path = { l with Platforms = [ FrameworkIdentifier.Native(newBuildMode,newPlatform) ]}; File = p; Runtime = None }
             else
