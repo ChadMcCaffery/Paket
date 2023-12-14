@@ -4,19 +4,29 @@ open System
 open System.IO
 open Newtonsoft.Json
 
+type CredentialProviderResponseCode = 
+    | Success = 0
+    | Error = 1
+    | NotFound = 2
+
+// https://github.com/NuGet/NuGet.Client/blob/e8b43e6602749844de42f9f37e07fa9aa1fb108c/src/NuGet.Core/NuGet.Protocol/Plugins/Messages/GetCredentialsResponse.cs#L43
 type CredentialProviderResultMessage =
-    { [<JsonProperty("Username")>]
+    {
+      [<JsonProperty("ResponseCode")>]
+      ResponseCode : CredentialProviderResponseCode;
+      [<JsonProperty("Username")>]
       Username : string;
       [<JsonProperty("Password")>]
       Password : string;
       [<JsonProperty("Message")>]
       Message  : string
-      [<JsonProperty("AuthTypes")>]
-      AuthTypes  : string [] }
-    // From https://github.com/NuGet/NuGet.Client/blob/c17547b5c64ab8d498cc24340a09ae647456cf20/src/NuGet.Clients/NuGet.Credentials/PluginCredentialResponse.cs#L34
-    member x.IsValid =
-        not (String.IsNullOrWhiteSpace x.Username) ||
-            not (String.IsNullOrWhiteSpace x.Password)
+      [<JsonProperty("AuthenticationTypes")>]
+      AuthTypes : string [] }
+
+    member this.IsValid : bool = true
+        //! NOTE: azure-credprovider does this, but I haven't seen it yet in response json
+        // Enum.IsDefined(typeof<CredentialProviderResponseCode>, this.ResponseCode) 
+
 type CredentialProviderExitCode =
     | Success = 0
     | ProviderNotApplicable = 1
@@ -27,14 +37,22 @@ type CredentialProviderResult =
     | NoCredentials of string
     | Abort of string
 
+type CredentialProviderOutputFormat =
+    | HumanReadable
+    | Json
+
 type CredentialProviderVerbosity =
-    | Normal
-    | Quiet
-    | Detailed
+    | Debug
+    | Verbose
+    | Information
+    | Minimal
+    | Warning
+    | Error
 
 type CredentialProviderParameters =
     { Uri : string
       NonInteractive : bool
+      CanShowDialog : bool
       IsRetry : bool
       Verbosity : CredentialProviderVerbosity }
 
@@ -56,14 +74,17 @@ module CredentialProviders =
     open Logging
     open System.Collections.Concurrent
 
-    let patternExe = "CredentialProvider*.exe"
-    let patternDll = "CredentialProvider*.dll"
-    let envVar = "NUGET_CREDENTIALPROVIDERS_PATH"
+    // See https://learn.microsoft.com/en-us/nuget/reference/extensibility/nuget-cross-platform-plugins#plugin-installation-and-discovery
+    let pluginPattern = "CredentialProvider*.dll"
+    let envVars =
+        [|
+            "NUGET_NETCORE_PLUGIN_PATHS"
+            "NUGET_PLUGIN_PATHS"
+        |]
     let directoryRoot =
         Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "NuGet",
-            "CredentialProviders")
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".nuget", "plugins", "netcore")
     let findAll rootPath customPaths assemblyPattern paketDirectoryAssemblyPattern =
         let directories =
             [ yield! customPaths
@@ -84,18 +105,20 @@ module CredentialProviders =
         else [ ]
 
     let collectProviders () =
-        let customPaths = findPathsFromEnvVar envVar
-        findAll directoryRoot customPaths patternExe patternExe @ findAll directoryRoot customPaths patternDll patternDll
+        let customPaths = envVars |> Seq.collect (fun v -> findPathsFromEnvVar v)
+        findAll directoryRoot customPaths pluginPattern pluginPattern
         |> List.distinct
 
     // See https://github.com/NuGet/NuGet.Client/blob/c17547b5c64ab8d498cc24340a09ae647456cf20/src/NuGet.Clients/NuGet.Credentials/PluginCredentialProvider.cs#L169
     let formatCommandLine args =
         [
-            yield! ["-uri"; args.Uri]
-            if args.NonInteractive then yield "-nonInteractive"
-            if args.IsRetry then yield "-isRetry"
-            if args.Verbosity <> CredentialProviderVerbosity.Normal then
-                yield! ["-verbosity"; args.Verbosity.ToString().ToLower()]
+            yield! ["-Uri"; args.Uri]
+            yield! ["-OutputFormat"; CredentialProviderOutputFormat.Json.ToString() ]
+            if args.NonInteractive then yield! ["-NonInteractive"; args.NonInteractive.ToString()]
+            if args.CanShowDialog then yield! ["-CanShowDialog"; args.CanShowDialog.ToString()]
+            if args.IsRetry then yield "-IsRetry"
+            if args.Verbosity <> CredentialProviderVerbosity.Information then
+                yield! ["-Verbosity"; args.Verbosity.ToString()]
         ]
         |> Seq.map (fun arg -> if arg.Contains " " then failwithf "cannot contain space" else arg)
         |> String.concat " "
@@ -169,7 +192,8 @@ module CredentialProviders =
             { Uri = source
               NonInteractive = not Environment.UserInteractive
               IsRetry = isRetry
-              Verbosity = CredentialProviderVerbosity.Normal }
+              CanShowDialog = Environment.UserInteractive
+              Verbosity = CredentialProviderVerbosity.Information }
         match _providerCredentialCache.TryGetValue key with
         | true, v when not isRetry ->
             v
@@ -183,9 +207,9 @@ module CredentialProviders =
                 Logging.verbosefn "Calling provider '%s' for credentials" provider
                 let result =
                     try callProvider provider args
-                    with :? CredentialProviderUnknownStatusException when args.Verbosity <> CredentialProviderVerbosity.Normal ->
+                    with :? CredentialProviderUnknownStatusException when args.Verbosity <> CredentialProviderVerbosity.Information ->
                         // https://github.com/NuGet/NuGet.Client/blob/c17547b5c64ab8d498cc24340a09ae647456cf20/src/NuGet.Clients/NuGet.Credentials/PluginCredentialProvider.cs#L117
-                        callProvider provider { args with Verbosity = CredentialProviderVerbosity.Normal }
+                        callProvider provider { args with Verbosity = CredentialProviderVerbosity.Information }
 
                 match result with
                 | CredentialProviderResult.Abort _ -> ()
