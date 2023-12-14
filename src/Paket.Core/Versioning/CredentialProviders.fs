@@ -116,7 +116,7 @@ module CredentialProviders =
             yield! ["-OutputFormat"; CredentialProviderOutputFormat.Json.ToString() ]
             if args.NonInteractive then yield! ["-NonInteractive"; args.NonInteractive.ToString()]
             if args.CanShowDialog then yield! ["-CanShowDialog"; args.CanShowDialog.ToString()]
-            if args.IsRetry then yield "-IsRetry"
+            if args.IsRetry then yield! ["-IsRetry"; args.IsRetry.ToString()]
             if args.Verbosity <> CredentialProviderVerbosity.Information then
                 yield! ["-Verbosity"; args.Verbosity.ToString()]
         ]
